@@ -134,10 +134,12 @@ func (dcs *defaultConfigSelector) SelectConfig(rpcInfo iresolver.RPCInfo) (*ires
 // e.g. to use dns resolver, a "dns:///" prefix should be applied to the target.
 func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *ClientConn, err error) {
 	cc := &ClientConn{
-		target:            target,
-		csMgr:             &connectivityStateManager{},
-		conns:             make(map[*addrConn]struct{}),
-		dopts:             defaultDialOptions(),
+		target: target,
+		csMgr:  &connectivityStateManager{},
+		conns:  make(map[*addrConn]struct{}),
+		dopts:  defaultDialOptions(),
+		// pickerWrapper 是对 balancer.Picker 的一层封装，
+		// balancer.Picker 其实是一个负载均衡器，它里面只有一个 Pick 方法，它返回一个 PickResult 结构，包含 SubConn 连接。
 		blockingpicker:    newPickerWrapper(),
 		czData:            new(channelzData),
 		firstResolveEvent: grpcsync.NewEvent(),
@@ -154,6 +156,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 		opt.apply(&cc.dopts)
 	}
 
+	// 注册拦截器
 	chainUnaryClientInterceptors(cc)
 	chainStreamClientInterceptors(cc)
 
@@ -178,6 +181,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 	channelz.AddTraceEvent(logger, cc.channelzID, 1, ted)
 	cc.csMgr.channelzID = cc.channelzID
 
+	// TSL 相关
 	if cc.dopts.copts.TransportCredentials == nil && cc.dopts.copts.CredsBundle == nil {
 		return nil, errNoTransportSecurity
 	}
@@ -199,6 +203,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 		}
 	}
 
+	// 设置返回服务器配置的格式
 	if cc.dopts.defaultServiceConfigRawJSON != nil {
 		scpr := parseServiceConfig(*cc.dopts.defaultServiceConfigRawJSON)
 		if scpr.Err != nil {
@@ -214,6 +219,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 		cc.dopts.copts.UserAgent = grpcUA
 	}
 
+	// 连接超时控制
 	if cc.dopts.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cc.dopts.timeout)
@@ -234,6 +240,7 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 		}
 	}()
 
+	// 尝试取得服务器配置（不用管，将会被废弃）
 	scSet := false
 	if cc.dopts.scChan != nil {
 		// Try to get an initial service config.
@@ -247,6 +254,8 @@ func DialContext(ctx context.Context, target string, opts ...DialOption) (conn *
 		default:
 		}
 	}
+
+	// 退避策略
 	if cc.dopts.bs == nil {
 		cc.dopts.bs = backoff.DefaultExponential
 	}
